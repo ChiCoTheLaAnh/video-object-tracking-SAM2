@@ -21,6 +21,7 @@ DRIVE_ROOT="${DRIVE_ROOT:-/content/drive/MyDrive/cv-final-project}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-$DRIVE_ROOT/checkpoints}"
 INPUT_DIR="${INPUT_DIR:-$DRIVE_ROOT/inputs}"
 RESULTS_DIR="${RESULTS_DIR:-$DRIVE_ROOT/results}"
+MODEL_REPO_ROOT="${MODEL_REPO_ROOT:-/content/model_repos}"
 
 GROUNDING_DINO_TAG="${GROUNDING_DINO_TAG:-v0.1.0-alpha2}"
 SAM2_REF="${SAM2_REF:-2b90b9f5ceec907a1c18123530e92e794ad901a4}"
@@ -40,6 +41,20 @@ download_if_missing() {
   curl -L --fail --output "$output_path" "$url"
 }
 
+clone_or_update_repo() {
+  local repo_url="$1"
+  local repo_dir="$2"
+  local repo_ref="$3"
+  if [[ -d "$repo_dir/.git" ]]; then
+    echo "[setup] updating repo at $repo_dir"
+    git -C "$repo_dir" fetch --tags origin
+  else
+    echo "[setup] cloning $repo_url -> $repo_dir"
+    git clone "$repo_url" "$repo_dir"
+  fi
+  git -C "$repo_dir" checkout -q "$repo_ref"
+}
+
 echo "[setup] upgrading pip"
 $PYTHON_BIN -m pip install --upgrade pip setuptools wheel
 
@@ -48,6 +63,7 @@ $PYTHON_BIN -m pip install -r requirements.txt
 
 echo "[setup] creating shared Drive folders"
 mkdir -p "$CHECKPOINT_DIR" "$INPUT_DIR" "$RESULTS_DIR"
+mkdir -p "$MODEL_REPO_ROOT"
 
 if [[ "$WITH_MODELS" -eq 0 ]]; then
   echo "[setup] base environment ready"
@@ -62,16 +78,30 @@ $PYTHON_BIN -m pip install \
   --index-url https://download.pytorch.org/whl/cu124
 
 $PYTHON_BIN -m pip install \
+  ninja \
   transformers==4.46.3 \
   accelerate==1.0.1 \
   huggingface_hub==0.26.2 \
   supervision==0.25.1
 
+GROUNDING_DINO_REPO_DIR="$MODEL_REPO_ROOT/GroundingDINO"
+SAM2_REPO_DIR="$MODEL_REPO_ROOT/sam2"
+
 echo "[setup] installing GroundingDINO from official repo tag ${GROUNDING_DINO_TAG}"
-$PYTHON_BIN -m pip install "git+https://github.com/IDEA-Research/GroundingDINO.git@${GROUNDING_DINO_TAG}"
+clone_or_update_repo "https://github.com/IDEA-Research/GroundingDINO.git" "$GROUNDING_DINO_REPO_DIR" "$GROUNDING_DINO_TAG"
+$PYTHON_BIN -m pip uninstall -y groundingdino || true
+(
+  cd "$GROUNDING_DINO_REPO_DIR"
+  CUDA_HOME=/usr/local/cuda FORCE_CUDA=1 $PYTHON_BIN -m pip install --no-build-isolation -e .
+)
 
 echo "[setup] installing SAM2 from official repo ref ${SAM2_REF}"
-$PYTHON_BIN -m pip install "git+https://github.com/facebookresearch/sam2.git@${SAM2_REF}"
+clone_or_update_repo "https://github.com/facebookresearch/sam2.git" "$SAM2_REPO_DIR" "$SAM2_REF"
+$PYTHON_BIN -m pip uninstall -y SAM-2 sam2 || true
+(
+  cd "$SAM2_REPO_DIR"
+  CUDA_HOME=/usr/local/cuda $PYTHON_BIN -m pip install --no-build-isolation -e .
+)
 
 download_if_missing "$GROUNDING_DINO_CKPT_URL" "$GROUNDING_DINO_CKPT_PATH"
 download_if_missing "$SAM2_CKPT_URL" "$SAM2_CKPT_PATH"

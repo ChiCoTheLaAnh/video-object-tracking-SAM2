@@ -31,6 +31,16 @@ def _torch_context(device: str):
     return nullcontext()
 
 
+def _to_numpy(value):
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        return value.numpy()
+    return np.asarray(value)
+
+
 def _load_image_predictor(config: Dict[str, Any]):
     model_cfg_value = str(config["model_cfg"])
     model_cfg_path = Path(model_cfg_value)
@@ -99,7 +109,7 @@ def predict_image_masks(image_rgb: np.ndarray, boxes_xyxy: Sequence[Sequence[flo
             predictor.set_image(image_rgb)
             for box in boxes_xyxy:
                 mask_batch, _, _ = predictor.predict(box=np.asarray(box)[None, :], multimask_output=False)
-                mask = np.asarray(mask_batch).squeeze()
+                mask = _to_numpy(mask_batch).squeeze()
                 masks.append(mask > float(config.get("mask_threshold", 0.0)))
     return masks
 
@@ -160,10 +170,11 @@ def propagate_video_masks(
 
                     masks_by_frame = {}
                     for frame_idx, object_ids, mask_logits in predictor.propagate_in_video(state):
-                        if object_id not in object_ids:
+                        object_ids_list = _to_numpy(object_ids).tolist() if hasattr(object_ids, "__iter__") else [int(object_ids)]
+                        if object_id not in object_ids_list:
                             continue
-                        matched_index = list(object_ids).index(object_id)
-                        frame_mask = np.asarray(mask_logits[matched_index]).squeeze() > float(config.get("mask_threshold", 0.0))
+                        matched_index = object_ids_list.index(object_id)
+                        frame_mask = _to_numpy(mask_logits[matched_index]).squeeze() > float(config.get("mask_threshold", 0.0))
                         masks_by_frame[int(frame_idx)] = frame_mask
 
             ordered_masks = [masks_by_frame.get(index, np.zeros(frames[0].shape[:2], dtype=bool)) for index in range(len(frames))]
