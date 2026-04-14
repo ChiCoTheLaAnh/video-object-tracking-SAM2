@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import statistics
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,21 @@ LABEL_RANK = {
     "no_detection": 1,
     "fallback": 1,
 }
+DEFAULT_ABLATION_VARIANT = "grounding_dino+sam2_periodic_regrounding_every_10"
+VARIANT_PRESETS = {
+    DEFAULT_ABLATION_VARIANT: {
+        "interval_frames": 10,
+        "matching": "iou",
+        "min_match_iou": 0.1,
+        "record_frames": True,
+    },
+    "grounding_dino+sam2_periodic_regrounding_every_10_iou_0_3": {
+        "interval_frames": 10,
+        "matching": "iou",
+        "min_match_iou": 0.3,
+        "record_frames": True,
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,11 +53,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", required=True, help="Path to the locked subset manifest.")
     parser.add_argument("--baseline_dir", required=True, help="Directory containing the official baseline outputs and baseline_table.csv.")
     parser.add_argument("--output_dir", required=True, help="Directory for ablation outputs.")
+    parser.add_argument(
+        "--ablation_variant",
+        default=DEFAULT_ABLATION_VARIANT,
+        choices=sorted(VARIANT_PRESETS),
+        help="Named ablation variant preset. Defaults to the original every-10-frames run with IoU 0.1.",
+    )
+    parser.add_argument(
+        "--min_match_iou",
+        type=float,
+        default=None,
+        help="Optional override for the minimum box-vs-mask IoU required before reseeding.",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Optional subset cap for quick validation.")
     parser.add_argument("--max_frames", type=int, default=None, help="Optional max frame override.")
     parser.add_argument("--grounding_ckpt", default=None, help="Optional GroundingDINO checkpoint override.")
     parser.add_argument("--sam2_ckpt", default=None, help="Optional SAM2 checkpoint override.")
     parser.add_argument("--device", default=None, help="Optional runtime device override.")
+    parser.add_argument(
+        "--compare_ablation_dir",
+        default=None,
+        help="Optional path to another ablation run root for aggregate comparison output during finalize.",
+    )
     parser.add_argument(
         "--finalize_reviewed",
         action="store_true",
@@ -153,6 +186,50 @@ def _delta_label(baseline_label: str, reground_label: str) -> str:
     return "same"
 
 
+def _resolve_variant_settings(args: argparse.Namespace) -> dict[str, Any]:
+    settings = dict(VARIANT_PRESETS[args.ablation_variant])
+    if args.min_match_iou is not None:
+        settings["min_match_iou"] = args.min_match_iou
+    settings["ablation_variant"] = args.ablation_variant
+    return settings
+
+
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 3)
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return round(float(statistics.median(values)), 3)
+
+
+def _reground_stats(clips: list[dict[str, Any]]) -> dict[str, float]:
+    attempts = [float(clip.get("num_reground_attempts", 0)) for clip in clips]
+    successes = [float(clip.get("num_reground_successes", 0)) for clip in clips]
+    return {
+        "mean_reground_attempts_per_clip": _mean(attempts),
+        "median_reground_attempts_per_clip": _median(attempts),
+        "mean_reground_successes_per_clip": _mean(successes),
+        "median_reground_successes_per_clip": _median(successes),
+    }
+
+
+def _variant_snapshot(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ablation_variant": summary.get("ablation_variant", ""),
+        "min_match_iou": summary.get("min_match_iou", 0.0),
+        "num_selected": summary.get("num_selected", 0),
+        "num_completed": summary.get("num_completed", 0),
+        "review_counts": summary.get("review_counts", {}),
+        "delta_counts": summary.get("delta_counts", {}),
+        "mean_reground_successes_per_clip": summary.get("mean_reground_successes_per_clip", 0.0),
+        "median_reground_successes_per_clip": summary.get("median_reground_successes_per_clip", 0.0),
+    }
+
+
 def _run_ablation(args: argparse.Namespace) -> int:
     from src.eval.eval_rvos import run_eval_subset
     from src.utils.io import load_project_config
@@ -175,16 +252,17 @@ def _run_ablation(args: argparse.Namespace) -> int:
         config["grounding_dino"]["device"] = args.device
         config["sam2"]["device"] = args.device
 
+    variant_settings = _resolve_variant_settings(args)
     config.setdefault("ablation", {})
-    config["ablation"]["variant"] = "grounding_dino+sam2_periodic_regrounding_every_10"
+    config["ablation"]["variant"] = variant_settings["ablation_variant"]
     config["ablation"].setdefault("regrounding", {})
     config["ablation"]["regrounding"].update(
         {
             "enabled": True,
-            "interval_frames": 10,
-            "matching": "iou",
-            "min_match_iou": 0.1,
-            "record_frames": True,
+            "interval_frames": variant_settings["interval_frames"],
+            "matching": variant_settings["matching"],
+            "min_match_iou": variant_settings["min_match_iou"],
+            "record_frames": variant_settings["record_frames"],
         }
     )
 
@@ -198,8 +276,11 @@ def _run_ablation(args: argparse.Namespace) -> int:
         summary_overrides={
             "ablation_variant": config["ablation"]["variant"],
             "baseline_dir": str(Path(args.baseline_dir).resolve()),
+            "min_match_iou": float(config["ablation"]["regrounding"]["min_match_iou"]),
         },
     )
+    summary.update(_reground_stats(summary.get("clips", [])))
+    _write_json(output_root / "ablation_summary.json", summary)
 
     review_table_path = output_root / "ablation_review_table.csv"
     existing_reviews = _load_existing_reviews(review_table_path)
@@ -233,6 +314,7 @@ def _finalize_reviewed(args: argparse.Namespace) -> int:
     baseline_table_path = baseline_root / "baseline_table.csv"
     ablation_table_path = output_root / "ablation_review_table.csv"
     delta_table_path = output_root / "ablation_delta_table.csv"
+    comparison_path = output_root / "ablation_variant_comparison.json"
 
     if not ablation_summary_path.exists():
         raise FileNotFoundError(f"Missing ablation summary: {ablation_summary_path}")
@@ -297,10 +379,28 @@ def _finalize_reviewed(args: argparse.Namespace) -> int:
     summary["delta_counts"] = delta_counts
     summary["ablation_review_table_path"] = str(ablation_table_path)
     summary["ablation_delta_table_path"] = str(delta_table_path)
+    summary.update(_reground_stats(summary.get("clips", [])))
     _write_json(ablation_summary_path, summary)
+
+    if args.compare_ablation_dir:
+        compare_root = Path(args.compare_ablation_dir).resolve()
+        compare_summary_path = compare_root / "ablation_summary.json"
+        if not compare_summary_path.exists():
+            raise FileNotFoundError(f"Missing comparison ablation summary: {compare_summary_path}")
+        compare_summary = _load_json(compare_summary_path)
+        comparison_payload = {
+            "baseline_dir": str(baseline_root),
+            "current_ablation_dir": str(output_root),
+            "comparison_ablation_dir": str(compare_root),
+            "current_variant": _variant_snapshot(summary),
+            "comparison_variant": _variant_snapshot(compare_summary),
+        }
+        _write_json(comparison_path, comparison_payload)
 
     print(f"Wrote reviewed ablation summary to {ablation_summary_path}")
     print(f"Wrote ablation delta table to {delta_table_path}")
+    if args.compare_ablation_dir:
+        print(f"Wrote ablation comparison summary to {comparison_path}")
     return 0
 
 
