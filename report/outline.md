@@ -49,3 +49,37 @@
 - The current subset run is suitable as an experiment scaffold, but any formal quantitative table should note the existing duplicate `clip_id` in the manifest summary.
 - Official qualitative baseline was completed on a locked 19-clip subset using `Grounding DINO + SAM2` without re-grounding.
 - All 19 official baseline runs stayed on `sam2_video_predictor`, so the main qualitative failure modes are now object ambiguity, drift, no-detection, and occlusion-related degradation rather than pipeline fallback.
+
+## Baseline Results
+
+The official baseline uses `Grounding DINO + SAM2` without any re-grounding step on a fixed 19-clip qualitative subset. The subset is balanced across four coarse difficulty tags: `easy=5`, `occlusion=5`, `crowded=5`, and `small_object=4`. All 19 runs completed successfully and stayed on the primary `sam2_video_predictor` path, which means the baseline is now stable enough to discuss model behavior rather than debugging the runtime stack.
+
+At the qualitative review level, the baseline breaks down into `7 good_tracking`, `7 partial_tracking`, `2 drift`, `1 wrong_object`, `1 no_detection`, and `1 fallback`. This distribution suggests that the main bottleneck is not catastrophic pipeline failure but degraded tracking quality under harder scenes. In other words, the baseline is strong enough on clean targets to serve as a reference point, but it is not yet robust to dense distractors, severe occlusion, and very small targets.
+
+Representative success cases for the write-up:
+
+- `10360251` (`small_object`, prompt=`car`): tracks small cars stably in a wide scene.
+- `853810` (`easy`, prompt=`dog`): tracks a single target with low ambiguity.
+- `16436839` (`easy`, prompt=`bicycle`): handles a dominant foreground target cleanly.
+- `5730870` (`easy`, prompt=`dog`): near-perfect tracking on a clear single target.
+- `6326811` (`easy`, prompt=`backpack`): stable tracking in portrait framing with a clean target.
+
+Representative failure cases for the write-up:
+
+- `11998127` (`crowded`, prompt=`person`): `drift` caused by many visually similar distractors.
+- `12699538` (`crowded`, prompt=`person`): `wrong_object` when the tracker switches targets in a dense overlapping crowd.
+- `5220726` (`occlusion`, prompt=`bicycle`): `fallback`-like failure under heavy mutual occlusion.
+- `5630823` (`small_object`, prompt=`dog`): `drift` toward a moving distractor while tracking a small target.
+- `6664239` (`crowded`, prompt=`person`): `no_detection` in a dense night scene with heavy motion and distractors.
+
+## Failure Analysis
+
+The 10 reviewed example cases show that the dominant failure modes are semantic ambiguity and target persistence, not infrastructure instability. Because all official baseline runs stayed on `sam2_video_predictor`, the failure analysis can focus on scene difficulty instead of implementation bugs.
+
+The first recurring pattern is **crowd-driven ambiguity**. In clips such as `11998127`, `12699538`, and `6664239`, the prompt `person` is semantically correct but underspecified relative to the scene. When many people are present with similar appearance and motion, the detector can either drift to a neighboring instance, switch identities entirely, or fail to localize a confident starting target. This is the clearest argument for later improvements such as re-grounding or stronger prompt conditioning.
+
+The second pattern is **occlusion-driven instability**. Clips such as `4992551`, `4992557`, `5021553`, and especially `5220726` show that once the target is partially hidden by other actors or framing, the baseline often degrades from `good_tracking` to `partial_tracking`, and in the worst case loses the target entirely. Even when the system does not fully collapse, mask quality and identity consistency degrade noticeably during crossings and mutual overlap.
+
+The third pattern is **small-object fragility**. The contrast between `10360251` and `11073730` for `car`, and between `853810`/`5730870` and `5630823`/`6413967` for `dog`, suggests that small targets are not uniformly hard; they become hard when small scale is combined with distractors or wide framing. The system can track a small object when it remains visually isolated, but performance deteriorates quickly when the same object competes with clutter or secondary motion cues.
+
+The practical conclusion is that the baseline is already good enough to establish a credible first result section: it is reliable on clean single-target clips and still usable on moderate difficulty scenes, but it degrades in exactly the settings where re-grounding or periodic re-detection would be expected to help. That makes the next experimental step well motivated: keep this no-re-grounding baseline fixed, then compare it against a re-grounding variant on the same subset and the same reviewed cases.
