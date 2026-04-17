@@ -39,6 +39,15 @@
 - Selected 5 failure cases: `11998127`, `12699538`, `5220726`, `5630823`, `6664239`.
 - Final export of sample artifacts on Drive was not cleanly finalized in Colab, but the reviewed baseline table and 5/5 success-failure split were completed locally.
 
+### Ablation Runs
+
+- `2026-04-14 | grounding_dino+sam2_periodic_regrounding_every_10 | selected=19 | completed=19 | pass`
+- Ablation 1 delta vs baseline: `improved=4`, `same=8`, `worse=7`.
+- Ablation 1 review counts: `partial_tracking=18`, `fallback=1`.
+- `2026-04-17 | grounding_dino+sam2_periodic_regrounding_every_10_iou_0_3 | selected=19 | completed=19 | pass`
+- Ablation 2 delta vs baseline: `improved=9`, `same=6`, `worse=4`.
+- Ablation 2 review counts: `good_tracking=12`, `partial_tracking=4`, `drift=1`, `no_detection=2`.
+
 ### Notes for Write-up
 
 - Primary runtime stack: `grounding_dino+sam2`
@@ -74,15 +83,15 @@ Representative failure cases for the write-up:
 
 ## Ablation Results
 
-The main ablation adds naive periodic re-grounding every 10 frames on top of the same `Grounding DINO + SAM2` stack and evaluates it on the same locked 19-clip subset. This keeps the comparison clean: the prompt set, clip set, checkpoints, and qualitative review procedure are unchanged, so any difference can be attributed to the re-grounding policy itself rather than data drift.
+The ablation study kept the same experimental frame throughout: the same locked 19-clip subset, the same prompts, the same checkpoints, and the same periodic schedule of re-grounding attempts at frames `10, 20, 30, 40`. The only thing that changed across ablation variants was the reseeding criterion. This makes the interpretation much cleaner than introducing a new model branch or a different schedule.
 
-At the clip level, the re-grounding variant produced `4 improved`, `8 same`, and `7 worse` outcomes relative to the no-re-grounding baseline. The reviewed re-grounding labels collapsed to `18 partial_tracking` and `1 fallback`, which is a strong sign that periodic reseeding reduced a few severe failures but also destabilized many clips that were previously solid. In effect, the ablation traded several hard failures for a broad shift toward middling tracking quality.
+The first variant, Ablation 1, used periodic re-grounding every 10 frames with `min_match_iou = 0.1`. That version produced `4 improved`, `8 same`, and `7 worse` outcomes relative to baseline, with review labels collapsing to `18 partial_tracking` and `1 fallback`. This is the negative control result: periodic reseeding with a permissive matching threshold was too aggressive and destabilized many clips that the baseline already handled well.
 
-The improvement cases are still meaningful. Re-grounding helped several baseline failure clips move upward into `partial_tracking`, including `11998127` (`drift -> partial_tracking`), `12699538` (`wrong_object -> partial_tracking`), `5220726` (`fallback -> partial_tracking`), and `5630823` (`drift -> partial_tracking`). These are exactly the kinds of crowded, occluded, and small-object scenes where periodic re-detection can plausibly recover from accumulated tracking drift.
+The follow-up variant, Ablation 2, kept the exact same periodic schedule and max-IoU matching rule but raised the acceptance threshold to `min_match_iou = 0.3`. That single change materially improved the result: Ablation 2 produced `9 improved`, `6 same`, and `4 worse` outcomes relative to baseline. Its review distribution also became much healthier, with `12 good_tracking`, `4 partial_tracking`, `1 drift`, and `2 no_detection`. Compared with Ablation 1, the stricter threshold recovered a large amount of tracking quality instead of collapsing most clips into the middle tier.
 
-However, the negative side of the ablation is stronger than the positive side in this first version. Several clips that were previously labeled `good_tracking` degraded to `partial_tracking`, including `10360251`, `853810`, `16436839`, `5730870`, `6326811`, `7825225`, and `9910242`. This pattern suggests that the current re-grounding policy is too aggressive: detector refreshes are being accepted often enough to introduce extra target jitter or unnecessary resets even when propagation is already stable.
+The strongest improvement cases are exactly the difficult scenes that motivated re-grounding in the first place. For example, `11998127` moved from `drift -> good_tracking`, `12699538` from `wrong_object -> good_tracking`, `5630823` from `drift -> good_tracking`, and `5220726` from `fallback -> partial_tracking`. These cases suggest that periodic detector refresh can help crowded, occluded, and small-object clips, but only when the reseeding rule is selective enough to avoid latching onto weak or noisy detections.
 
-The runtime pattern supports that interpretation. Most clips show `4` re-ground attempts and often `4` successes, meaning the detector is finding an acceptable box at nearly every scheduled refresh. With `min_match_iou = 0.1`, the current acceptance rule is probably too permissive. The ablation therefore produces a useful negative result: **naive periodic re-grounding every 10 frames does not outperform the baseline overall**, even though it can rescue a subset of difficult clips.
+The remaining regressions still matter. Ablation 2 is not strictly better than baseline on every clip: `11073730` degraded from `partial_tracking -> no_detection`, `16436839` from `good_tracking -> partial_tracking`, `7825225` from `good_tracking -> partial_tracking`, and `9910242` from `good_tracking -> no_detection`. So the main conclusion is not that periodic re-grounding is universally superior. The conclusion is narrower and more defensible: **the failure of Ablation 1 came largely from over-aggressive reseeding, and a stricter matching threshold makes periodic re-grounding a net positive on this subset**.
 
 ## Failure Analysis
 
@@ -94,7 +103,7 @@ The second pattern is **occlusion-driven instability**. Clips such as `4992551`,
 
 The third pattern is **small-object fragility**. The contrast between `10360251` and `11073730` for `car`, and between `853810`/`5730870` and `5630823`/`6413967` for `dog`, suggests that small targets are not uniformly hard; they become hard when small scale is combined with distractors or wide framing. The system can track a small object when it remains visually isolated, but performance deteriorates quickly when the same object competes with clutter or secondary motion cues.
 
-The practical conclusion after the ablation is more specific. The baseline is already good enough to establish a credible first result section, but the first periodic re-grounding variant is not a net improvement. Instead of cleanly fixing hard cases, it often rescues severe failures only by pulling many easy or already-stable clips down to `partial_tracking`. That shifts the next experimental direction: rather than adding more naive periodic schedules, the more promising follow-up is selective or trigger-based re-grounding with a stricter matching rule.
+The practical conclusion after the ablations is more specific than before. The baseline is already strong enough to anchor the result section, and Ablation 1 showed that permissive periodic reseeding is a bad default. However, Ablation 2 shows that the periodic schedule itself is not the main problem. The real issue is acceptance quality: once reseeding is gated with a stricter `IoU >= 0.3` match, re-grounding becomes useful on many of the hard clips without collapsing the whole subset into `partial_tracking`. That shifts the next experimental direction from "abandon periodic re-grounding" to "make reseeding even more selective or trigger-based."
 
 ## Report Tables
 
@@ -104,11 +113,12 @@ The practical conclusion after the ablation is more specific. The baseline is al
 | --- | --- | --- | --- |
 | 19 | easy=5, occlusion=5, crowded=5, small_object=4 | good_tracking=7, partial_tracking=7, drift=2, wrong_object=1, no_detection=1, fallback=1 | The no-re-grounding baseline is reliable on clean single-target clips but degrades under crowding, occlusion, and small-object settings. |
 
-### Table 2. Ablation Delta Summary
+### Table 2. Ablation Comparison Summary
 
-| improved | same | worse | reground_review_counts | interpretation |
-| --- | --- | --- | --- | --- |
-| 4 | 8 | 7 | partial_tracking=18, fallback=1 | Periodic re-grounding every 10 frames is not a net win; it rescues a few hard failures but destabilizes many clips that were already strong under the baseline. |
+| variant | improved | same | worse | review_counts | interpretation |
+| --- | --- | --- | --- | --- | --- |
+| Ablation 1 (`IoU >= 0.1`) | 4 | 8 | 7 | partial_tracking=18, fallback=1 | Permissive periodic re-grounding is too aggressive and pulls most clips into middling quality. |
+| Ablation 2 (`IoU >= 0.3`) | 9 | 6 | 4 | good_tracking=12, partial_tracking=4, drift=1, no_detection=2 | Stricter matching turns periodic re-grounding into a net positive on the locked subset. |
 
 ## Figure Package
 
@@ -118,8 +128,8 @@ Lock the report/slides figure set to exactly six items so the narrative stays fi
 - `F2_baseline_success_easy`: `853810`, prompt=`dog`, label=`good_tracking`. Chosen because it is the cleanest single-target success case and makes the baseline strength easy to explain.
 - `F3_baseline_failure_wrong_object`: `12699538`, prompt=`person`, label=`wrong_object`. Chosen because it visualizes crowd-driven identity switching clearly.
 - `F4_baseline_failure_drift`: `5630823`, prompt=`dog`, label=`drift`. Chosen because it is a compact example of small-object tracking collapsing toward a distractor.
-- `F5_ablation_improved`: `12699538`, prompt=`person`, `wrong_object -> partial_tracking`. Chosen because it is the clearest case where periodic re-grounding helps a severe baseline failure.
-- `F6_ablation_worse`: `10360251`, prompt=`car`, `good_tracking -> partial_tracking`. Chosen because it cleanly demonstrates the cost of naive periodic re-grounding on a clip that baseline already handled well.
+- `F5_ablation_improved`: `12699538`, prompt=`person`, `wrong_object -> good_tracking` under Ablation 2. Chosen because it is the clearest case where stricter re-grounding resolves a severe crowd-driven failure.
+- `F6_ablation_worse`: `9910242`, prompt=`person`, `good_tracking -> no_detection` under Ablation 2. Chosen because it is the clearest remaining failure showing that periodic re-grounding still carries risk even with a stricter threshold.
 
 The slide mapping should stay derivative from this report package:
 
@@ -135,8 +145,10 @@ The project now has a coherent result story rather than just a runnable pipeline
 
 At the same time, the baseline exposes a clear and defensible weakness profile. Performance degrades most often when prompts are underspecified relative to the scene, especially in crowds, partial occlusion, and small-object settings. The failure analysis shows that the core issue is not infrastructure reliability but target identity preservation under ambiguity. This gives the project a clean problem statement for the experimental section: the question is how to recover from drift and wrong-object switches without destabilizing already-good tracks.
 
-The periodic re-grounding ablation answers that question in an informative but negative way. Re-detecting every 10 frames does help a few severe failure clips, especially crowded and occluded cases that were previously labeled `drift`, `wrong_object`, or `fallback`. However, it also downgrades many clips that were already `good_tracking` under the baseline. The resulting `4 improved / 8 same / 7 worse` split is strong evidence that naive periodic re-grounding is too blunt an intervention for this setting.
+The ablation sequence answers that question more precisely than a single experiment could. Ablation 1 showed that naive periodic re-grounding every 10 frames with a permissive `IoU >= 0.1` gate is too blunt. It helped a few severe failures, but the overall `4 improved / 8 same / 7 worse` result showed that over-aggressive reseeding can inject instability into clips that baseline propagation already handled well.
 
-That negative result is still useful. It narrows the design space and rules out one simplistic fix: periodic refresh on a fixed schedule with a permissive IoU threshold is not the right default policy. The main lesson is that re-grounding must be more selective than the current implementation. If the project were extended, the most justified next step would be a trigger-based or more conservative re-grounding strategy, for example one with stricter matching, quality-based gating, or re-detection only when propagation confidence visibly degrades.
+Ablation 2 changes that interpretation in an important way. When the same periodic schedule is kept fixed but the matching threshold is tightened to `IoU >= 0.3`, the result flips to `9 improved / 6 same / 4 worse`, with `12 good_tracking` clips overall. That means the earlier negative result should not be read as "periodic re-grounding is fundamentally bad." The better reading is that **periodic re-grounding is highly sensitive to reseeding quality**, and the original failure came mainly from letting weak detector matches reset the tracker too easily.
 
-The final project-level conclusion is therefore straightforward. The stronger default result is the no-re-grounding baseline. It is stable enough to serve as the main system and honest enough to reveal real weaknesses. The periodic re-grounding ablation is valuable not because it wins, but because it shows exactly why naive refresh does not automatically solve RVOS failure modes: it can rescue hard failures, but it can also inject unnecessary detector noise and destabilize clips that propagation already handled correctly.
+The final project-level conclusion is therefore more nuanced than before. The baseline remains a strong and credible reference system: it is simple, stable, and already performs well on many clean clips. But the best result in this project is now the stricter follow-up ablation, not the original no-re-grounding system. On this locked 19-clip subset, periodic re-grounding with a stricter `IoU >= 0.3` acceptance rule is the strongest tested configuration because it improves many hard cases while keeping regressions limited.
+
+The most justified next step is no longer "try stricter matching" because that question has now been answered. The next step would be a trigger-based or confidence-gated re-grounding policy that preserves the benefits of Ablation 2 while avoiding its remaining regressions on clips like `9910242` and `11073730`.
