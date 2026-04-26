@@ -1,5 +1,13 @@
 # CV Final Project
 
+## Written Explanation
+This project is a computer vision final project focused on referring video object segmentation, where a user gives a natural-language prompt such as `dog`, `car`, or `person` and the system tries to find and track that object through a video. In practice, the pipeline first uses GroundingDINO to ground the text prompt to an object region, then uses SAM2 to convert that region into a segmentation mask and propagate that mask across later frames. The project was built as a modular Python codebase with reusable modules in `src/`, thin command-line scripts in `scripts/`, shared YAML configuration files in `configs/`, and notebooks that call the scripts instead of duplicating logic. The main tools used were Python, OpenCV, NumPy, PyYAML, Jupyter notebooks, Google Colab Pro for heavier GPU runs, Git for version control, and the pretrained GroundingDINO and SAM2 model stacks for detection and segmentation. The development process started with repo wiring and environment validation, then moved into smoke testing, custom-video inference, subset evaluation, failure analysis, and ablation runs to compare tracking behavior under different re-grounding settings. Along the way, several practical issues were addressed, including config-loading and path wiring, checkpoint setup, synthetic overlay validation, stability of the primary `sam2_video_predictor` path, duplicate-manifest reporting caveats, and tuning periodic re-grounding so that a stricter IoU threshold improved hard cases without destabilizing clips that already tracked well.
+
+## Screencapture Video With Audio
+No narrated screencapture file is currently stored in this repository, so the README cannot yet embed a real video asset. To satisfy the final submission requirement, replace the placeholder below with your actual YouTube, Google Drive, or GitHub-hosted recording link after you export the screencast.
+
+**Video link:** [Project screencapture walkthrough with audio](PASTE_VIDEO_URL_HERE)
+
 ## Project Overview
 This repository is the source of truth for the project code, configs, and lightweight notebooks.
 
